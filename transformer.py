@@ -13,8 +13,11 @@ class RMSNorm(nn.Module):
 
 class Attention(nn.Module):
     def __init__(self, n_heads: int = 8, dim: int = 512):
+        super().__init__()
+
         self.n_heads = n_heads
         self.dim = dim
+        assert dim % n_heads == 0, f"dim ({dim}) must be divisible by n_heads ({n_heads})"
         self.head_dim = dim // n_heads
 
         # linear layers for each head
@@ -22,8 +25,6 @@ class Attention(nn.Module):
         self.W_K = nn.Linear(dim, dim, bias=False)
         self.W_V = nn.Linear(dim, dim, bias=False)
         self.W_O = nn.Linear(dim, dim, bias=False)
-
-        super().__init__()
     def forward(self, x):
         return x
 
@@ -34,9 +35,9 @@ class FFN(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self):
+    def __init__(self, n_heads: int = 8, dim: int = 512):
         self.rms_norm_attn = RMSNorm(input_dim)
-        self.attention = Attention()
+        self.attention = Attention(n_heads, dim)
         self.rms_norm_ffn = RMSNorm(input_dim)
         self.ffn = FFN()
         super().__init__()
@@ -55,9 +56,9 @@ class TransformerBlock(nn.Module):
         return ffn_residual
 
 class Transformer(nn.Module):
-    def __init__(self, block_num: int = 8):
+    def __init__(self, vocab_size: int = 10000, block_num: int = 8, n_heads: int = 8, dim: int = 512):
         self.embedding = nn.Embedding(vocab_size, input_dim)
-        self.blocks = nn.ModuleList([TransformerBlock() for _ in range(block_num)])
+        self.blocks = nn.ModuleList([TransformerBlock(n_heads, dim) for _ in range(block_num)])
         self.final_norm = nn.LayerNorm(input_dim)
         # lm_head use embedding weight
         self.lm_head = self.embedding.weight
@@ -72,6 +73,6 @@ class Transformer(nn.Module):
         # caller will apply softmax later
         return output
         
-model = Transformer(vocab_size)
+model = Transformer(vocab_size, block_num=8, n_heads=8, dim=512)
 inputs = torch.randint(0, vocab_size, (2, 128), dtype=torch.long)
 output_logits = model(inputs)
