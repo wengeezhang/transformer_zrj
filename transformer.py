@@ -12,10 +12,11 @@ class RMSNorm(nn.Module):
         self.eps = 1e-5
 
 class Attention(nn.Module):
-    def __init__(self, n_heads: int = 8, dim: int = 512):
+    def __init__(self, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512):
         super().__init__()
 
         self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads
         self.dim = dim
         assert dim % n_heads == 0, f"dim ({dim}) must be divisible by n_heads ({n_heads})"
         self.head_dim = dim // n_heads
@@ -29,17 +30,21 @@ class Attention(nn.Module):
         return x
 
 class FFN(nn.Module):
-    def __init__(self):
+    def __init__(self, dim_ff: int = 2048):
         super().__init__()
-
+        self.W_GATE = nn.Linear(input_dim, dim_ff, bias=False)
+        self.W_UP = nn.Linear(input_dim, dim_ff, bias=False)
+        self.W_DOWN = nn.Linear(dim_ff, input_dim, bias=False)
+    def forward(self, x):
+        return self.W_DOWN(torch.nn.functional.silu(self.W_GATE(x) * self.W_UP(x)))
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, n_heads: int = 8, dim: int = 512):
+    def __init__(self, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512):
         self.rms_norm_attn = RMSNorm(input_dim)
-        self.attention = Attention(n_heads, dim)
+        self.attention = Attention(n_heads, n_kv_heads, dim)
         self.rms_norm_ffn = RMSNorm(input_dim)
-        self.ffn = FFN()
+        self.ffn = FFN(2048)
         super().__init__()
     
     def forward(self, x):
@@ -59,7 +64,7 @@ class Transformer(nn.Module):
     def __init__(self, vocab_size: int = 10000, block_num: int = 8, n_heads: int = 8, dim: int = 512):
         self.embedding = nn.Embedding(vocab_size, input_dim)
         self.blocks = nn.ModuleList([TransformerBlock(n_heads, dim) for _ in range(block_num)])
-        self.final_norm = nn.LayerNorm(input_dim)
+        self.final_norm = RMSNorm(input_dim)
         # lm_head use embedding weight
         self.lm_head = self.embedding.weight
         super().__init__()
@@ -69,7 +74,7 @@ class Transformer(nn.Module):
         for block in self.blocks:
             x = block(x)
         x = self.final_norm(x)
-        output = self.lm_head(x)
+        output = x @ self.lm_head.t()
         # caller will apply softmax later
         return output
         
