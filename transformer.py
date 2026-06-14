@@ -88,7 +88,7 @@ class FFN(nn.Module):
         self.W_UP = nn.Linear(dim, dim_ff, bias=False)
         self.W_DOWN = nn.Linear(dim_ff, dim, bias=False)
     def forward(self, x):
-        return self.W_DOWN(torch.nn.functional.silu(self.W_GATE(x) * self.W_UP(x)))
+        return self.W_DOWN(torch.nn.functional.silu(self.W_GATE(x)) * self.W_UP(x))
 
 
 class TransformerBlock(nn.Module):
@@ -122,14 +122,16 @@ class Transformer(nn.Module):
         self.blocks = nn.ModuleList([TransformerBlock(n_heads, n_kv_heads, dim, dim_ff) for _ in range(block_num)])
         self.final_norm = RMSNorm(dim)
         # lm_head use embedding weight
-        self.lm_head = self.embedding.weight
+        # self.embedding.weight is an nn.Parameter. When you assign it to self.lm_head, PyTorch's __setattr__ detects it's a Parameter and calls 
+        # not store the reference at all, use self.embedding.weight directly in forward
+        # self.lm_head = self.embedding.weight
 
     def forward(self, input_ids):
         x = self.embedding(input_ids)
         for block in self.blocks:
             x = block(x, self.cos, self.sin)
         x = self.final_norm(x)
-        output = x @ self.lm_head.t()
+        output = x @ self.embedding.weight.t()
         # caller will apply softmax later
         return output
         
