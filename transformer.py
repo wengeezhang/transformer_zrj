@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 
 vocab_size = 10000
-input_dim = 512
 
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps: float = 1e-5):
@@ -13,16 +12,18 @@ class RMSNorm(nn.Module):
         rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
         return x * (1 / rms) * self.weight # element-wise division and multiplication
 
-def pre_compute_rope(max_len: int = 160000):
+def pre_compute_rope(dim: int, max_len: int = 160000, base: int = 10000):
     # pre-compute the rope
-
-    unit_angle = 2 * torch.pi / max_len
+    # unit_angle = 2 * torch.pi / max_len
 
     # prepare the angles for every position
-    angles = torch.arange(max_len) * unit_angle
+    # angles = torch.arange(max_len) * unit_angle
+    freqs = 1 / torch.pow(base, torch.arange(0, dim, 2).float() / dim)
+    t = torch.arange(max_len).float()
 
-    cos = torch.cos(angles)
-    sin = torch.sin(angles)
+    freqs = torch.outer(t, freqs)
+    cos = torch.cos(freqs)
+    sin = torch.sin(freqs)
     return cos, sin
 
 def apply_rope(x, cos, sin):
@@ -56,9 +57,8 @@ class Attention(nn.Module):
         v = self.W_V(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
         # rope
-        q_rope = apply_rope(q, cos, sin)
-        k_rope = apply_rope(k, cos, sin)
-        
+        q_rope = apply_rope(q, cos[:T], sin[:T])
+        k_rope = apply_rope(k, cos[:T], sin[:T])
         # use repeat_interleave to copy k/v for feature groups that share the same k/v.
         # for example:
         # kv_heads is [head1, head2, head3, head4]
@@ -68,7 +68,10 @@ class Attention(nn.Module):
         repeat_v = v.repeat_interleave(self.n_heads // self.n_kv_heads, dim=1)
 
         # calculate attention scores
-        attn_scores_of_head = torch.nn.functional.softmax(q_rope @ repeat_k.transpose(-2, -1)) / torch.pow(self.head_dim, 0.5)
+        attn_scores_of_head = q_rope @ repeat_k.transpose(-2, -1) / torch.pow(self.head_dim, 0.5), dim=-1
+        causal_mask = torch.tril(torch.ones(T, T, device=q_rope.device), diagonal=1)
+        attn_scores_of_head = attn_scores_of_head.masked_fill(causal_mask == 0, float('-inf'))
+        attn_scores_of_head = torch.nn.functional.softmax(attn_scores_of_head, dim=-1)
         attn_of_head = attn_scores_of_head @ repeat_v # output shape is (B, n_heads, T, head_dim)
         # transpose to (B, T, n_heads, head_dim)
         attn_of_head = attn_of_head.transpose(1, 2)
@@ -79,28 +82,28 @@ class Attention(nn.Module):
         return self.W_O(attn_of_head)
 
 class FFN(nn.Module):
-    def __init__(self, dim_ff: int = 2048):
+    def __init__(self, dim: int = 512, dim_ff: int = 2048):
         super().__init__()
-        self.W_GATE = nn.Linear(input_dim, dim_ff, bias=False)
-        self.W_UP = nn.Linear(input_dim, dim_ff, bias=False)
-        self.W_DOWN = nn.Linear(dim_ff, input_dim, bias=False)
+        self.W_GATE = nn.Linear(dim, dim_ff, bias=False)
+        self.W_UP = nn.Linear(dim, dim_ff, bias=False)
+        self.W_DOWN = nn.Linear(dim_ff, dim, bias=False)
     def forward(self, x):
         return self.W_DOWN(torch.nn.functional.silu(self.W_GATE(x) * self.W_UP(x)))
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, cos=None, sin=None):
+    def __init__(self, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, dim_ff: int = 2048):
         super().__init__()
-        self.rms_norm_attn = RMSNorm(input_dim, eps=1e-5)
-        self.attention = Attention(n_heads, n_kv_heads, dim, cos=cos, sin=self.sin)
-        self.rms_norm_ffn = RMSNorm(input_dim, eps=1e-5)
-        self.ffn = FFN(2048)
+        self.rms_norm_attn = RMSNorm(dim, eps=1e-5)
+        self.attention = Attention(n_heads, n_kv_heads, dim)
+        self.rms_norm_ffn = RMSNorm(dim, eps=1e-5)
+        self.ffn = FFN(dim, dim_ff)
     
-    def forward(self, x):
+    def forward(self, x, cos=None, sin=None):
         # pre-normalization for attention
         attn_norm = self.rms_norm_attn(x)
         # attention
-        attn = self.attention(attn_norm, cos=self.cos, sin=self.sin)
+        attn = self.attention(attn_norm, cos=cos, sin=sin)
         # residual connection for attention
         attn_residual = x + attn
         # pre-normalization for FFN
@@ -110,19 +113,19 @@ class TransformerBlock(nn.Module):
         return ffn_residual
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size: int = 10000, block_num: int = 8, n_heads: int = 8, dim: int = 512):
+    def __init__(self, vocab_size: int = 10000, block_num: int = 8, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, dim_ff: int = 2048):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, input_dim)
-        self.cos, self.sin = pre_compute_rope(max_len=160000)
-        self.blocks = nn.ModuleList([TransformerBlock(n_heads, dim, self.cos, self.sin) for _ in range(block_num)])
-        self.final_norm = RMSNorm(input_dim)
+        self.embedding = nn.Embedding(vocab_size, dim)
+        self.cos, self.sin = pre_compute_rope(dim // n_heads, max_len=160000)
+        self.blocks = nn.ModuleList([TransformerBlock(n_heads, n_kv_heads, dim, dim_ff) for _ in range(block_num)])
+        self.final_norm = RMSNorm(dim)
         # lm_head use embedding weight
         self.lm_head = self.embedding.weight
 
     def forward(self, input_ids):
         x = self.embedding(input_ids)
         for block in self.blocks:
-            x = block(x)
+            x = block(x, self.cos, self.sin)
         x = self.final_norm(x)
         output = x @ self.lm_head.t()
         # caller will apply softmax later
