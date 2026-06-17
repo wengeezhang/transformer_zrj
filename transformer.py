@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-vocab_size = 10000
-
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps: float = 1e-5):
         super().__init__()
@@ -113,10 +111,10 @@ class TransformerBlock(nn.Module):
         return ffn_residual
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size: int = 10000, block_num: int = 8, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, dim_ff: int = 2048):
+    def __init__(self, vocab_size: int = 10000, block_num: int = 8, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, dim_ff: int = 2048, rope_max_len: int = 160000):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, dim)
-        cos, sin = pre_compute_rope(dim // n_heads, max_len=160000)
+        cos, sin = pre_compute_rope(dim // n_heads, max_len=rope_max_len)
         self.register_buffer("cos", cos)
         self.register_buffer("sin", sin)
         self.blocks = nn.ModuleList([TransformerBlock(n_heads, n_kv_heads, dim, dim_ff) for _ in range(block_num)])
@@ -135,6 +133,9 @@ class Transformer(nn.Module):
         # caller will apply softmax later
         return output
         
-model = Transformer(vocab_size, block_num=8, n_heads=8, dim=512)
-inputs = torch.randint(0, vocab_size, (2, 128), dtype=torch.long)
-output_logits = model(inputs)
+if __name__ == "__main__":
+    vocab_size = 10000
+    model = Transformer(vocab_size, block_num=8, n_heads=8, dim=512)
+    inputs = torch.randint(0, vocab_size, (2, 128), dtype=torch.long)
+    output_logits = model(inputs)
+    print(output_logits.shape)
