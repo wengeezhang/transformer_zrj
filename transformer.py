@@ -66,7 +66,7 @@ class Attention(nn.Module):
         repeat_v = v.repeat_interleave(self.n_heads // self.n_kv_heads, dim=1)
 
         # calculate attention scores
-        attn_scores_of_head = q_rope @ repeat_k.transpose(-2, -1) / torch.pow(self.head_dim, 0.5)
+        attn_scores_of_head = q_rope @ repeat_k.transpose(-2, -1) / self.head_dim ** 0.5
         causal_mask = torch.tril(torch.ones(T, T, device=q_rope.device))
         attn_scores_of_head = attn_scores_of_head.masked_fill(causal_mask == 0, float('-inf'))
         attn_scores_of_head = torch.nn.functional.softmax(attn_scores_of_head, dim=-1)
@@ -113,10 +113,10 @@ class TransformerBlock(nn.Module):
 class Transformer(nn.Module):
     def __init__(self, vocab_size: int = 10000, block_num: int = 8, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, dim_ff: int = 2048, rope_max_len: int = 160000):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, dim)
         cos, sin = pre_compute_rope(dim // n_heads, max_len=rope_max_len)
         self.register_buffer("cos", cos)
         self.register_buffer("sin", sin)
+        self.embedding = nn.Embedding(vocab_size, dim)
         self.blocks = nn.ModuleList([TransformerBlock(n_heads, n_kv_heads, dim, dim_ff) for _ in range(block_num)])
         self.final_norm = RMSNorm(dim)
         # lm_head use embedding weight
