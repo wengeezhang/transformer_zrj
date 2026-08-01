@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from moe import MoEFFN, MoEConfig
 
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps: float = 1e-5):
@@ -88,14 +89,18 @@ class FFN(nn.Module):
     def forward(self, x):
         return self.W_DOWN(torch.nn.functional.silu(self.W_GATE(x)) * self.W_UP(x))
 
-
+# 参数的设置位置放在这里是否合适。
+n_dense_layers = 4
 class TransformerBlock(nn.Module):
-    def __init__(self, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, dim_ff: int = 2048):
+    def __init__(self, block_id: int = 0, n_heads: int = 8, n_kv_heads: int = 8, dim: int = 512, dim_ff: int = 2048):
         super().__init__()
         self.rms_norm_attn = RMSNorm(dim, eps=1e-5)
         self.attention = Attention(n_heads, n_kv_heads, dim)
         self.rms_norm_ffn = RMSNorm(dim, eps=1e-5)
-        self.ffn = FFN(dim, dim_ff)
+        # todo: 1. 入参传哪些；2. moe_cfg 的初始化位置放在这里是否合适。
+        moe_cfg = MoEConfig(dim)
+        self.ffn = FFN(dim, dim_ff) if block_id < n_dense_layers else MoEFFN(moe_cfg)
+
     
     def forward(self, x, cos=None, sin=None):
         # pre-normalization for attention
@@ -117,7 +122,7 @@ class Transformer(nn.Module):
         self.register_buffer("cos", cos)
         self.register_buffer("sin", sin)
         self.embedding = nn.Embedding(vocab_size, dim)
-        self.blocks = nn.ModuleList([TransformerBlock(n_heads, n_kv_heads, dim, dim_ff) for _ in range(block_num)])
+        self.blocks = nn.ModuleList([TransformerBlock(n_heads, block_id,n_kv_heads, dim, dim_ff) for block_id in range(block_num)])
         self.final_norm = RMSNorm(dim)
         # lm_head use embedding weight
         # self.embedding.weight is an nn.Parameter. When you assign it to self.lm_head, PyTorch's __setattr__ detects it's a Parameter and calls 
@@ -138,4 +143,5 @@ if __name__ == "__main__":
     model = Transformer(vocab_size, block_num=8, n_heads=8, dim=512)
     inputs = torch.randint(0, vocab_size, (2, 128), dtype=torch.long)
     output_logits = model(inputs)
+    model.statistics()
     print(output_logits.shape)
