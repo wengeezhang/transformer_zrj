@@ -89,6 +89,23 @@ class FFN(nn.Module):
     def forward(self, x):
         return self.W_DOWN(torch.nn.functional.silu(self.W_GATE(x)) * self.W_UP(x))
 
+class ClampedFFN(nn.Module):
+    def __init__(self, dim: int = 512, dim_ff: int = 2048, gateMin = -10, gateMax = 10, upMin = -10, upMax = 10):
+        super().__init__()
+        self.W_GATE = nn.Linear(dim, dim_ff, bias=False)
+        self.W_UP = nn.Linear(dim, dim_ff, bias=False)
+        self.W_DOWN = nn.Linear(dim_ff, dim, bias=False)
+        self.ClampGateMin = gateMin
+        self.ClampGateMax = gateMax
+        self.ClampUpMin = upMin
+        self.ClampUpMax = upMax
+    def forward(self, x):
+        gate = self.W_DOWN(x)
+        up = self.W_UP(x)
+        clampedGate = gate.clamp(max=self.ClampGateMax)
+        clampedUp = up.clamp(max=self.ClampUpMax,min=self.ClampUpMin)
+        return self.W_DOWN(torch.nn.functional.silu(clampedGate) * clampedUp)
+
 # 参数的设置位置放在这里是否合适。
 n_dense_layers = 4
 class TransformerBlock(nn.Module):
